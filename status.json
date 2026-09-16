@@ -1,24 +1,36 @@
 {
-  "checkedAt": "2026-09-16T08:05:21.012Z",
-  "health": "degraded",
-  "lastSuccessfulCheckAt": null,
+  "checkedAt": "2026-09-16T08:06:36.222088+00:00",
   "validation": "official_documentation_only",
   "liveAPITested": false,
+  "health": "ok",
   "providers": {
     "openAI": {
-      "state": "held",
-      "retained": "gpt-6-astra",
-      "reason": "synthetic_alert_test"
+      "recommended": "gpt-6-astra",
+      "sources": [
+        "https://developers.openai.com/api/docs/models.md",
+        "https://developers.openai.com/api/docs/models/gpt-6-astra.md"
+      ],
+      "evidenceSHA256": "3a74bfccb1100f5c53d094d19bf179b8637f0dd704007495353d0237c69eed85",
+      "state": "unchanged"
     },
     "claude": {
-      "state": "held",
-      "retained": "claude-opus-5",
-      "reason": "synthetic_alert_test"
+      "recommended": "claude-opus-5",
+      "sources": [
+        "https://platform.claude.com/docs/en/models/overview.md",
+        "https://platform.claude.com/docs/en/models/opus-5/overview.md"
+      ],
+      "evidenceSHA256": "1831aaefb3698bc7c4a4d2a9cc9dddeb12bddef6f6d4a9a3a60e646789c7ef5b",
+      "state": "unchanged"
     },
     "grok": {
-      "state": "held",
-      "retained": "grok-4.6",
-      "reason": "synthetic_alert_test"
+      "recommended": "grok-4.6",
+      "sources": [
+        "https://docs.x.ai/developers/models.md",
+        "https://docs.x.ai/developers/models/grok-4.6.md"
+      ],
+      "evidenceSHA256": "49adc43227635f86536f77b2f443906984ff6b4a433138fbe8f2d791b46b5937",
+      "state": "unchanged"
     }
-  }
+  },
+  "lastSuccessfulCheckAt": "2026-09-16T08:06:36.222088+00:00"
 }

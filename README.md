@@ -1,46 +1,54 @@
 # Forge model catalog
 
-Public model metadata and synthetic compatibility automation only. No Forge app
-source, athlete information, conversations, credentials, or private data.
+Weekly, keyless model metadata updates. No Forge app source, athlete data,
+conversations, provider credentials, or inference calls. No API keys to fund.
+The public repository uses standard GitHub-hosted Linux runners.
 
-## Activation
+## Automatic operation
 
-The workflow is deliberately disabled until setup is complete.
+Every Monday at 06:23 UTC, the workflow reads official OpenAI, Anthropic, and xAI
+public model documentation. It follows each provider's explicit default
+recommendation and checks documented model IDs, image inputs, and request-profile
+compatibility signals. It does not guess the newest model by its name or number.
 
-1. In repository Settings > Secrets and variables > Actions, add dedicated
-   `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `XAI_API_KEY` secrets. Use budgeted CI
-   accounts, never an athlete's BYOK credentials.
-2. Add repository variable `CATALOG_ENABLED` with value `true`.
-3. Run **Verify and refresh model catalog** manually. Check its successful result.
-4. It then checks every six hours. Failed checks do not replace the catalog.
+A new recommendation must appear in two observations at least six days apart
+(normally consecutive weekly runs) before promotion. Ambiguous/missing/changed
+documentation holds the entire catalog. Repeated manual runs cannot bypass the
+observation period. The previous primary stays in the fallback ladder.
 
-The bootstrap catalog contains documentation-verified IDs, not a claim of live
-API validation. The first successful enabled workflow supplies that evidence.
+**Documentation checks are not live API compatibility tests.** No test inference
+is charged to the owner or users. User-key/account access is handled only during
+normal app requests, with same-provider fallback. No public scraper can guarantee
+zero maintenance if the source format or provider API changes.
 
-## Contract
+## Visible health and alerts
 
-The job discovers available stable models within Claude Opus, Grok numbered
-flagships, and OpenAI numbered/Astra/Sol flagship families. It uses provider
-release timestamps, not a lexical model-name sort. New naming families require
-an automation rule update, not a Forge app release, if the API stays compatible.
+`status.json` records every check, public source links and hashes, pending models,
+retained models and errors. Weekly status commits also keep this public repository
+active when model IDs do not change. The schedule does not depend on app usage.
+GitHub scheduling may be delayed; it is not an exact-time SLA.
 
-Each candidate must answer synthetic text and synthetic white-pixel image
-requests in both one-shot and streaming mode within the probe budget. These are
-API compatibility checks, not medical quality, privacy, cancellation-compute,
-or device-performance certification. No health information is used.
+Failures open **one issue assigned to the repository owner**, with the held model,
+reason and run link. Repeat failures update that issue; a healthy check closes it
+with a recovery note. Assignment appears through the owner's GitHub notification
+settings. Workflow failures remain visibly red. GitHub outages or a disabled
+workflow cannot notify through that same unavailable workflow; the public last
+successful check is the independent visible freshness timestamp, not a watchdog.
 
-Only the catalog JSON is committed by automation. The app's destinations,
-credentials, privacy filtering, permissions, and tools cannot be changed here.
-Revert a catalog commit to roll back. Clients refresh at most every six hours
-after successful fetches and retain their cached/shipped defaults on failure.
+The workflow uses GitHub's built-in repository token only. No custom secret,
+personal access token, paid model key, or CATALOG_ENABLED variable is required.
+To test notification delivery, run it manually with `test_alert=true`, then run
+normally to exercise recovery. The test retains the catalog unchanged.
 
 ## Local checks
 
-`python3 cloud_model_catalog.py --catalog cloud_model_policy.json --check`
+`python3 -m unittest -v test_cloud_model_catalog`
 
-Live checks use environment keys and a separate output path:
+`node --test test_cloud_catalog_alert.cjs`
 
-`python3 cloud_model_catalog.py --catalog cloud_model_policy.json --live --output candidate.json`
+`python3 cloud_model_catalog.py --catalog cloud_model_policy.json --refresh --output candidate.json --status status.json`
 
-Live checks make paid API requests on the CI accounts. They do not deploy by
-themselves. The GitHub workflow publishes only a verified artifact.
+Only public documentation GETs are allowed by the fetcher, including redirects.
+Restore a prior catalog commit for rollback. App clients cache the catalog for a
+week and retain their previous/shipped selection if fetching fails. An inactive
+phone catches up when opened; it cannot receive data while offline or powered off.

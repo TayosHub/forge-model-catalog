@@ -1,38 +1,82 @@
-# Copy to .github/workflows/update.yml in the PUBLIC catalog-only repository.
-# Repository contents: cloud_model_catalog.py, cloud_model_policy.json, this workflow.
-# No Forge app source or athlete data belongs in that repository.
-name: Verify and refresh model catalog
+# Public metadata-only repository. No provider keys or inference calls.
+name: Weekly keyless model catalog
 on:
   schedule:
-    - cron: '23 */6 * * *'
+    - cron: '23 6 * * 1'
   workflow_dispatch:
+    inputs:
+      test_alert:
+        description: 'Exercise the owner alert without changing model IDs'
+        type: boolean
+        default: false
 permissions:
   contents: write
+  issues: write
 concurrency:
   group: model-catalog
   cancel-in-progress: false
 jobs:
   refresh:
-    if: vars.CATALOG_ENABLED == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Discover and probe stable flagship models
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
-        run: python cloud_model_catalog.py --catalog cloud_model_policy.json --live --output candidate.json
-      - name: Publish only a verified change
+      - name: Offline contract tests
         run: |
-          if cmp -s cloud_model_policy.json candidate.json; then exit 0; fi
-          cp candidate.json cloud_model_policy.json
+          python -m unittest -v test_cloud_model_catalog
+          node --test test_cloud_catalog_alert.cjs
+      - name: Read official public documentation
+        id: docs
+        continue-on-error: true
+        env:
+          TEST_ALERT: ${{ inputs.test_alert || 'false' }}
+        run: |
+          if [ "$TEST_ALERT" = "true" ]; then exit 42; fi
+          python cloud_model_catalog.py --catalog cloud_model_policy.json --refresh --output candidate.json --status status.json
+      - name: Publish catalog or retained-state health receipt
+        id: publish
+        if: always()
+        env:
+          CHECK_OUTCOME: ${{ steps.docs.outcome }}
+          TEST_ALERT: ${{ inputs.test_alert || 'false' }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          let status = {};
+          try { status = JSON.parse(fs.readFileSync('status.json', 'utf8')); } catch {}
+          if (process.env.CHECK_OUTCOME !== 'success' && (status.health !== 'degraded' || process.env.TEST_ALERT === 'true')) {
+            const catalog = JSON.parse(fs.readFileSync('cloud_model_policy.json', 'utf8'));
+            status = {
+              checkedAt: new Date().toISOString(), health: 'degraded',
+              lastSuccessfulCheckAt: status.lastSuccessfulCheckAt || null,
+              validation: 'official_documentation_only', liveAPITested: false,
+              providers: Object.fromEntries(['openAI', 'claude', 'grok'].map(p => [p, {
+                state: 'held', retained: catalog[p].primary,
+                reason: process.env.TEST_ALERT === 'true' ? 'synthetic_alert_test' : 'workflow_failed_before_fresh_status'
+              }]))
+            };
+          }
+          fs.writeFileSync('status.json', JSON.stringify(status, null, 2) + '\n');
+          NODE
+          if [ "$CHECK_OUTCOME" = "success" ]; then cp candidate.json cloud_model_policy.json; fi
           git config user.name 'Forge Model Catalog'
           git config user.email 'forge-model-catalog@users.noreply.github.com'
-          git add -- cloud_model_policy.json
-          git commit -m 'Update verified cloud model catalog'
+          git add -- cloud_model_policy.json status.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'Record weekly keyless catalog check'
           git push origin HEAD:main
+      - name: Notify owner or close recovered alert
+        if: always()
+        env:
+          CHECK_OUTCOME: ${{ steps.docs.outcome == 'success' && steps.publish.outcome == 'success' && 'success' || 'failure' }}
+          TEST_ALERT: ${{ inputs.test_alert || 'false' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await require('./cloud_catalog_alert.cjs').run({ github, context, core });
+      - name: Keep failed checks visibly failed
+        if: always() && (steps.docs.outcome != 'success' || steps.publish.outcome != 'success')
+        run: exit 1

@@ -1,15 +1,12 @@
-"""Discover stable models within approved families; publish only after probes.
-
-Uses dedicated CI keys from environment. Never reads Keychain or athlete data.
---check is offline. --live writes a candidate artifact, never pushes or deploys.
-Failures keep the input catalog unchanged and exit nonzero. Do not print HTTP
-response bodies: even synthetic probes must not leak keys/provider diagnostics.
+"""Weekly keyless updates from official public model documentation.
+No provider APIs, inference calls, environment credentials, or athlete data.
+Documentary evidence is NOT live API compatibility verification.
 """
 import argparse
 import copy
 import datetime
+import hashlib
 import json
-import os
 from pathlib import Path
 import re
 import time
@@ -17,224 +14,217 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-PROVIDERS = {
-    "claude": ("https://api.anthropic.com/v1", "ANTHROPIC_API_KEY", r"claude-opus-(\d+(?:-\d+)?)"),
-    "grok": ("https://api.x.ai/v1", "XAI_API_KEY", r"grok-(\d+(?:\.\d+)?)"),
-    "openAI": ("https://api.openai.com/v1", "OPENAI_API_KEY", r"gpt-(\d+(?:\.\d+)?)(?:-(?:astra|sol))?"),
+SOURCES = {
+    "openAI": "https://developers.openai.com/api/docs/models.md",
+    "claude": "https://platform.claude.com/docs/en/models/overview.md",
+    "grok": "https://docs.x.ai/developers/models.md",
 }
-MARKER = "FORGE_MODEL_OK"
-# Synthetic opaque white pixel, not a user image.
-PIXEL = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a8X8AAAAASUVORK5CYII="
+PREFIXES = {"openAI": "gpt-", "claude": "claude-", "grok": "grok-"}
+STABILITY_DAYS = 6  # Second weekly observation; manual reruns cannot promote.
 
 
-def version(provider, model):
-    match = re.fullmatch(PROVIDERS[provider][2], model)
-    return tuple(int(x) for x in re.split(r"[.-]", match[1])) if match else None
+def utcnow():
+    return datetime.datetime.now(datetime.timezone.utc)
 
 
-def created(record):
-    value = record.get("created", record.get("created_at"))
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        try:
-            return datetime.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
-        except ValueError:
-            pass
-    return 0
-
-
-def candidates(provider, records, current, updated_at=""):
-    if version(provider, current) is None:
-        raise ValueError("Current model is outside the approved family")
-    floor = next((created(x) for x in records if x.get("id") == current), 0)
-    if floor <= 0:
-        floor = created({"created_at": updated_at})
-    if floor <= 0:
-        raise ValueError("Cannot establish model recency")
-    # Release timestamps, not lexical/numeric version order: Grok 4.20 preceded 4.6.
-    eligible = [x for x in records if version(provider, x.get("id", "")) is not None
-                and x["id"] != current and floor < created(x) <= time.time()
-                and (provider == "grok" or version(provider, x["id"]) >= version(provider, current))]
-    return list(dict.fromkeys(x["id"] for x in sorted(eligible, key=lambda x: (created(x), x["id"]), reverse=True)))[:3]
+def timestamp(value):
+    return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def validate(catalog):
     if catalog.get("schemaVersion") != 2:
-        raise ValueError("Unsupported catalog schema")
-    for provider, prefix in [("claude", "claude-"), ("grok", "grok-"), ("openAI", "gpt-")]:
+        raise ValueError("unsupported_schema")
+    timestamp(catalog["updatedAt"])
+    for provider, prefix in PREFIXES.items():
         item = catalog[provider]
         ids = [item["primary"]] + item.get("fallbacks", [])
         if not 1 <= len(ids) <= 4 or len(set(ids)) != len(ids):
-            raise ValueError("Invalid fallback ladder")
+            raise ValueError("invalid_ladder")
         if not all(isinstance(x, str) and x.startswith(prefix) and len(x) <= 128
                    and re.fullmatch(r"[a-z0-9._-]+", x) for x in ids):
-            raise ValueError("Invalid model ID")
+            raise ValueError("invalid_model_id")
 
 
-def headers(provider, key):
-    result = {"Content-Type": "application/json"}
-    if provider == "claude":
-        result.update({"x-api-key": key, "anthropic-version": "2023-06-01"})
+def allowed_url(url):
+    parsed = urllib.parse.urlsplit(url)
+    roots = {"developers.openai.com": "/api/docs/", "platform.claude.com": "/docs/en/",
+             "docs.x.ai": "/developers/"}
+    return (parsed.scheme == "https" and parsed.hostname in roots
+            and parsed.path.startswith(roots[parsed.hostname])
+            and not parsed.username and not parsed.password
+            and parsed.port in (None, 443) and not parsed.query and not parsed.fragment)
+
+
+class DocsOnlyRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not allowed_url(newurl):
+            raise ValueError("untrusted_redirect")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def fetch(url):
+    if not allowed_url(url):
+        raise ValueError("untrusted_source")
+    # GET only. No cookie jar, auth header, request body, or credential reads.
+    # The explicit .md route chooses Markdown. A mixed Accept header causes xAI's
+    # content-negotiation middleware to return 404 for otherwise valid .md URLs.
+    request = urllib.request.Request(url, headers={"User-Agent": "ForgeModelCatalog/3.0", "Accept": "*/*"})
+    for attempt in range(2):
+        try:
+            with urllib.request.build_opener(DocsOnlyRedirect()).open(request, timeout=20) as response:
+                if not allowed_url(response.url):
+                    raise ValueError("untrusted_response")
+                raw = response.read(2_000_001)
+                if len(raw) > 2_000_000:
+                    raise ValueError("oversized_document")
+                text = raw.decode("utf-8")
+                if len(text) < 100 or "<html" in text[:1000].lower():
+                    raise ValueError("not_documentation")
+                return text
+        except urllib.error.HTTPError as error:
+            if attempt or error.code not in (429, 500, 502, 503, 504):
+                raise
+        except (urllib.error.URLError, TimeoutError):
+            if attempt:
+                raise
+        time.sleep(2)
+    raise ValueError("source_unavailable")
+
+
+def one(pattern, text):
+    matches = re.findall(pattern, text, flags=re.I | re.M)
+    if len(matches) != 1:
+        raise ValueError("ambiguous_or_changed_document")
+    return matches[0]
+
+
+def recommended_page(provider, text):
+    # Provider's explicit default recommendation, not highest version number.
+    if provider == "openAI":
+        path = one(r"If you're not sure where to start, use \[[^\]]+\]\((/api/docs/models/[a-z0-9.-]+)\), our flagship", text)
+    elif provider == "claude":
+        path = one(r"If you're unsure which model to use, start with \[[^\]]+\]\((https://platform\.claude\.com/docs/en/models/[a-z0-9-]+/overview)\)", text)
     else:
-        result["Authorization"] = "Bearer " + key
-    return result
+        path = one(r"^Chat:\s*\[[^\]]+\]\((/developers/models/[a-z0-9.-]+)\)", text)
+    url = urllib.parse.urljoin(SOURCES[provider], path)
+    if not url.endswith(".md"):
+        url += ".md"
+    if not allowed_url(url) or urllib.parse.urlsplit(url).hostname != urllib.parse.urlsplit(SOURCES[provider]).hostname:
+        raise ValueError("untrusted_recommendation")
+    return url
 
 
-class NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, hdrs, newurl):
-        raise ValueError("Provider redirect refused")
-
-
-def open_request(provider, key, path, body=None):
-    endpoint = PROVIDERS[provider][0] + path
-    data = None if body is None else json.dumps(body).encode()
-    req = urllib.request.Request(endpoint, data=data, headers=headers(provider, key))
-    return urllib.request.build_opener(NoRedirect()).open(req, timeout=20)
-
-
-def discover(provider, key):
-    ids = []
-    path = "/models?limit=100" if provider == "claude" else "/models"
-    for _ in range(10):
-        with open_request(provider, key, path) as response:
-            raw = response.read(1_048_577)
-            if len(raw) > 1_048_576:
-                raise ValueError("Model list too large")
-            page = json.loads(raw)
-        ids.extend(page["data"])
-        if not page.get("has_more"):
-            return ids
-        if provider != "claude" or not page.get("last_id"):
-            raise ValueError("Unsupported pagination")
-        path = "/models?limit=100&after_id=" + urllib.parse.quote(page["last_id"], safe="")
-    raise ValueError("Incomplete model list")
-
-
-def probe_body(provider, model, stream, photo):
-    prompt = "Reply with exactly " + MARKER
-    if photo:
-        prompt = "Name the color in this image. Reply with exactly WHITE."
-    if provider == "claude":
-        content = prompt if not photo else [
-            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": PIXEL}},
-            {"type": "text", "text": prompt},
+def documented_model(provider, overview, detail):
+    if provider == "openAI":
+        model = one(r"^Model ID:\s*\x60([a-z0-9.-]+)\x60", detail)
+        required = [
+            r"Input modalities:\s*text,\s*image",
+            r"\|\s*Chat Completions\s*\|\s*\x60v1/chat/completions\x60\s*\|\s*Supported\s*\|",
+            r"^-\s*streaming\s*$",
+            r"reasoning\.effort.*\x60low\x60",
         ]
-        return {"model": model, "system": "Follow the user's response format.",
-                "messages": [{"role": "user", "content": content}], "max_tokens": 768 if stream else 512,
-                "thinking": {"type": "disabled"}, "output_config": {"effort": "low"}, "stream": stream}
-    content = prompt if not photo else [
-        {"type": "text", "text": prompt},
-        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + PIXEL}},
-    ]
-    body = {"model": model, "messages": [{"role": "system", "content": "Follow the user's response format."},
-             {"role": "user", "content": content}], "stream": stream, "reasoning_effort": "low"}
-    body["max_completion_tokens" if provider == "openAI" else "max_tokens"] = 4096 if provider == "openAI" else (768 if stream else 512)
-    return body
+    elif provider == "claude":
+        model = one(r"^\|\s*Claude API\s*\|\s*\x60([a-z0-9-]+)\x60\s*\|", detail)
+        required = [
+            r"Input\s*→\s*output\s*\|\s*Text and images\s*→\s*text",
+            r"(?:thinking can be disabled only at effort|Disabling thinking requires effort)\s*\x60high\x60\s*or below",
+        ]
+        if f"\x60{model}\x60" not in overview:
+            raise ValueError("model_not_in_current_catalog")
+    else:
+        model = one(r"\*\*Model name:\*\*\s*\x60([a-z0-9.-]+)\x60", detail)
+        required = [
+            r"\*\*Modalities:\*\*\s*text,\s*image\s*→\s*text",
+            r"\*\*Reasoning efforts \(supported\):\*\*.*\x60low\x60",
+        ]
+    if not model.startswith(PREFIXES[provider]) or len(model) > 128:
+        raise ValueError("wrong_provider")
+    if any(token in model.split("-") for token in ("preview", "experimental", "latest", "beta", "mini", "nano")):
+        raise ValueError("non_stable_or_smaller_tier")
+    if not all(re.search(pattern, detail, re.I | re.M) for pattern in required):
+        raise ValueError("unsupported_or_unproven_request_profile")
+    return model
 
 
-def probe(provider, key, model, stream, photo):
-    started = time.monotonic()
-    path = "/messages" if provider == "claude" else "/chat/completions"
-    with open_request(provider, key, path, probe_body(provider, model, stream, photo)) as response:
-        if stream:
-            text, ended, count = "", False, 0
-            while True:
-                line = response.readline(16_385)
-                if not line:
-                    break
-                count += len(line)
-                if len(line) > 16_384 or count > 131_072 or time.monotonic() - started > 30:
-                    raise ValueError("Stream budget exceeded")
-                if not line.startswith(b"data: "):
-                    continue
-                payload = line[6:].strip()
-                if payload == b"[DONE]":
-                    ended = True
-                    break
-                event = json.loads(payload)
-                if provider == "claude":
-                    text += event.get("delta", {}).get("text", "")
-                    ended |= event.get("type") == "message_stop"
-                    if event.get("type") == "error":
-                        raise ValueError("Stream error")
-                else:
-                    for choice in event.get("choices", []):
-                        text += choice.get("delta", {}).get("content") or ""
-            if not ended:
-                raise ValueError("Truncated stream")
-        else:
-            raw = response.read(131_073)
-            if len(raw) > 131_072:
-                raise ValueError("Response budget exceeded")
-            result = json.loads(raw)
-            if provider == "claude":
-                text = "".join(x.get("text", "") for x in result["content"] if x.get("type") == "text")
-                if result.get("stop_reason") != "end_turn":
-                    raise ValueError("Incomplete response")
-            else:
-                choice = result["choices"][0]
-                text = choice["message"]["content"]
-                if choice.get("finish_reason") != "stop":
-                    raise ValueError("Incomplete response")
-    if text.strip() != ("WHITE" if photo else MARKER) or time.monotonic() - started > 30:
-        raise ValueError("Compatibility probe failed")
-
-
-def update(catalog, keys, list_models=discover, check=probe):
+def update(catalog, previous=None, get=fetch, now=None):
     validate(catalog)
+    now = now or utcnow()
+    previous = previous or {}
     updated = copy.deepcopy(catalog)
-    for provider in PROVIDERS:
-        current = catalog[provider]["primary"]
-        options = candidates(provider, list_models(provider, keys[provider]), current, catalog["updatedAt"])
-        # Verify the current model too. An outage must not publish an untested artifact.
-        selected = None
-        for model in options + [current]:
-            try:
-                for stream in [False, True]:
-                    for photo in [False, True]:
-                        check(provider, keys[provider], model, stream, photo)
-                selected = model
-                break
-            except (ValueError, KeyError, TypeError, OSError):
-                continue
-        if selected is None:
-            raise ValueError("No verified model for " + provider)
-        if selected != current:
-            old = [current] + catalog[provider].get("fallbacks", [])
-            updated[provider] = {"primary": selected, "fallbacks": list(dict.fromkeys(old))[:3]}
-    if updated != catalog:
-        updated["updatedAt"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    report = {"checkedAt": now.isoformat(), "validation": "official_documentation_only",
+              "liveAPITested": False, "health": "ok", "providers": {}}
+    for provider, source in SOURCES.items():
+        try:
+            overview = get(source)
+            detail_url = recommended_page(provider, overview)
+            detail = get(detail_url)
+            model = documented_model(provider, overview, detail)
+            row = {"recommended": model, "sources": [source, detail_url],
+                   "evidenceSHA256": hashlib.sha256((overview + "\n" + detail).encode()).hexdigest()}
+            current = catalog[provider]["primary"]
+            if model == current:
+                row["state"] = "unchanged"
+            elif model in catalog[provider].get("fallbacks", []):
+                raise ValueError("recommendation_would_downgrade")
+            else:
+                prior = previous.get("providers", {}).get(provider, {})
+                since = prior.get("firstSeen") if prior.get("recommended") == model else None
+                first_seen = timestamp(since) if since else now
+                if first_seen.tzinfo is None or first_seen > now:
+                    first_seen = now
+                row["firstSeen"] = first_seen.isoformat()
+                row["state"] = "pending_second_weekly_observation"
+                if now - first_seen >= datetime.timedelta(days=STABILITY_DAYS):
+                    old = [current] + catalog[provider].get("fallbacks", [])
+                    updated[provider] = {"primary": model, "fallbacks": list(dict.fromkeys(old))[:3]}
+                    row["state"] = "promoted_from_documentation"
+            report["providers"][provider] = row
+        except (ValueError, TypeError, KeyError, OSError) as error:
+            report["health"] = "degraded"
+            # Error reasons are fixed local codes or HTTP status; no remote body.
+            reason = ("HTTP_" + str(error.code)) if isinstance(error, urllib.error.HTTPError) else (str(error) if isinstance(error, ValueError) else type(error).__name__)
+            report["providers"][provider] = {"state": "held", "reason": reason[:160],
+                                             "retained": catalog[provider]["primary"], "source": source}
+    if report["health"] != "ok":
+        updated = copy.deepcopy(catalog)
+        for row in report["providers"].values():
+            if row.get("state") == "promoted_from_documentation":
+                row["state"] = "held_due_to_source_failure"
+    elif updated != catalog:
+        updated["updatedAt"] = now.isoformat()
+    report["lastSuccessfulCheckAt"] = now.isoformat() if report["health"] == "ok" else previous.get("lastSuccessfulCheckAt")
     validate(updated)
-    return updated
+    return updated, report
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--catalog", type=Path, required=True)
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--live", action="store_true")
+    parser.add_argument("--status", type=Path)
+    parser.add_argument("--refresh", action="store_true", help="GET public docs only; no paid inference")
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
     catalog = json.loads(args.catalog.read_text())
     validate(catalog)
-    if not args.live:
-        print("Catalog schema valid. No live API checks performed.")
+    if not args.refresh:
+        print("Catalog schema valid. No network or model calls.")
         return
-    if not args.output or args.output.resolve() == args.catalog.resolve():
-        raise ValueError("Use a separate output artifact")
-    keys = {p: os.environ.get(config[1], "") for p, config in PROVIDERS.items()}
-    if not all(keys.values()):
-        raise ValueError("Dedicated CI provider keys are required")
-    result = update(catalog, keys)
+    if not args.output or not args.status or args.output.resolve() == args.catalog.resolve() or args.status.resolve() in (args.catalog.resolve(), args.output.resolve()):
+        raise ValueError("separate_artifact_paths_required")
+    previous = json.loads(args.status.read_text()) if args.status.exists() else {}
+    candidate, report = update(catalog, previous)
+    args.status.parent.mkdir(parents=True, exist_ok=True)
+    args.status.write_text(json.dumps(report, indent=2) + "\n")
+    if report["health"] != "ok":
+        raise ValueError("public_docs_check_failed_existing_catalog_retained")
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(result, indent=2) + "\n")
-    print("Verified catalog artifact written. No deployment performed.")
+    args.output.write_text(json.dumps(candidate, indent=2) + "\n")
+    print("Public docs checked. No keys or inference calls. Catalog artifact ready.")
 
 
 if __name__ == "__main__":
     try:
         main()
     except (ValueError, KeyError, TypeError, OSError) as error:
-        # Intentionally omit error str/body: HTTP errors can include credentials.
-        raise SystemExit("Catalog check failed (" + type(error).__name__ + "). Existing catalog retained.")
+        raise SystemExit("Catalog held: " + type(error).__name__ + ". Check status.json; no inference was called.")

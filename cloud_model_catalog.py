@@ -54,7 +54,8 @@ def candidates(provider, records, current, updated_at=""):
         raise ValueError("Cannot establish model recency")
     # Release timestamps, not lexical/numeric version order: Grok 4.20 preceded 4.6.
     eligible = [x for x in records if version(provider, x.get("id", "")) is not None
-                and x["id"] != current and floor < created(x) <= time.time()]
+                and x["id"] != current and floor < created(x) <= time.time()
+                and (provider == "grok" or version(provider, x["id"]) >= version(provider, current))]
     return list(dict.fromkeys(x["id"] for x in sorted(eligible, key=lambda x: (created(x), x["id"]), reverse=True)))[:3]
 
 

@@ -1,0 +1,38 @@
+# Copy to .github/workflows/update.yml in the PUBLIC catalog-only repository.
+# Repository contents: cloud_model_catalog.py, cloud_model_policy.json, this workflow.
+# No Forge app source or athlete data belongs in that repository.
+name: Verify and refresh model catalog
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: model-catalog
+  cancel-in-progress: false
+jobs:
+  refresh:
+    if: vars.CATALOG_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Discover and probe stable flagship models
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+        run: python cloud_model_catalog.py --catalog cloud_model_policy.json --live --output candidate.json
+      - name: Publish only a verified change
+        run: |
+          if cmp -s cloud_model_policy.json candidate.json; then exit 0; fi
+          cp candidate.json cloud_model_policy.json
+          git config user.name 'Forge Model Catalog'
+          git config user.email 'forge-model-catalog@users.noreply.github.com'
+          git add -- cloud_model_policy.json
+          git commit -m 'Update verified cloud model catalog'
+          git push origin HEAD:main

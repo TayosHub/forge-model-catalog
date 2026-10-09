@@ -28,6 +28,7 @@ jobs:
         run: |
           python -m unittest -v test_cloud_model_catalog
           node --test test_cloud_catalog_alert.cjs
+          node --test test_cloud_catalog_receipt.cjs
       - name: Read official public documentation
         id: docs
         continue-on-error: true
@@ -35,7 +36,7 @@ jobs:
           TEST_ALERT: ${{ inputs.test_alert || 'false' }}
         run: |
           if [ "$TEST_ALERT" = "true" ]; then exit 42; fi
-          python cloud_model_catalog.py --catalog cloud_model_policy.json --refresh --output candidate.json --status status.json
+          python cloud_model_catalog.py --catalog cloud_model_policy.json --refresh --output candidate.json --previous-status status.json --status check-status.json
       - name: Publish catalog or retained-state health receipt
         id: publish
         if: always()
@@ -43,24 +44,7 @@ jobs:
           CHECK_OUTCOME: ${{ steps.docs.outcome }}
           TEST_ALERT: ${{ inputs.test_alert || 'false' }}
         run: |
-          node <<'NODE'
-          const fs = require('node:fs');
-          let status = {};
-          try { status = JSON.parse(fs.readFileSync('status.json', 'utf8')); } catch {}
-          if (process.env.CHECK_OUTCOME !== 'success' && (status.health !== 'degraded' || process.env.TEST_ALERT === 'true')) {
-            const catalog = JSON.parse(fs.readFileSync('cloud_model_policy.json', 'utf8'));
-            status = {
-              checkedAt: new Date().toISOString(), health: 'degraded',
-              lastSuccessfulCheckAt: status.lastSuccessfulCheckAt || null,
-              validation: 'official_documentation_only', liveAPITested: false,
-              providers: Object.fromEntries(['openAI', 'claude', 'grok'].map(p => [p, {
-                state: 'held', retained: catalog[p].primary,
-                reason: process.env.TEST_ALERT === 'true' ? 'synthetic_alert_test' : 'workflow_failed_before_fresh_status'
-              }]))
-            };
-          }
-          fs.writeFileSync('status.json', JSON.stringify(status, null, 2) + '\n');
-          NODE
+          node cloud_catalog_receipt.cjs
           if [ "$CHECK_OUTCOME" = "success" ]; then cp candidate.json cloud_model_policy.json; fi
           git config user.name 'Forge Model Catalog'
           git config user.email 'forge-model-catalog@users.noreply.github.com'

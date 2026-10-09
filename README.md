@@ -29,9 +29,23 @@ active when model IDs do not change. The schedule does not depend on app usage.
 GitHub scheduling may be delayed; it is not an exact-time SLA.
 
 Failures open **one issue assigned to the repository owner**, with the held model,
-reason and run link. Repeat failures update that issue; a healthy check closes it
-with a recovery note. Assignment appears through the owner's GitHub notification
-settings. Workflow failures remain visibly red. GitHub outages or a disabled
+reason and run link. Every failed run attempt explicitly mentions the owner;
+repeat failures add a comment to the same issue and update its summary. A receipt
+prevents duplicate comments when the notification step retries in the same
+attempt. A healthy, successfully published check closes it with a recovery note.
+An error annotation and job summary also link the failure to its run. For an
+organization-owned fork, assign a maintainer to the alert issue; the workflow
+mentions those assignees instead of guessing an organization recipient.
+
+GitHub mention delivery still depends on the recipient's notification settings
+and access. A successful API call proves the issue/comment was written, not that
+email or a mobile push was received. Check the GitHub inbox for `reason:mention`
+after an alert-path test. Native scheduled-workflow notifications can go to the
+person who last changed the schedule or re-enabled it, so they are not the owner
+alert contract. See [GitHub workflow notifications](https://docs.github.com/en/actions/concepts/workflows-and-actions/notifications-for-workflow-runs)
+and [mentions](https://docs.github.com/en/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax#mentioning-people-and-teams).
+
+Workflow failures remain visibly red. GitHub outages or a disabled
 workflow cannot notify through that same unavailable workflow; the public last
 successful check is the independent visible freshness timestamp, not a watchdog.
 
@@ -46,7 +60,14 @@ normally to exercise recovery. The test retains the catalog unchanged.
 
 `node --test test_cloud_catalog_alert.cjs`
 
+`node --test test_cloud_catalog_receipt.cjs`
+
 `python3 cloud_model_catalog.py --catalog cloud_model_policy.json --refresh --output candidate.json --status status.json`
+
+Automation reads observation history using `--previous-status status.json` and
+writes `--status check-status.json`. `cloud_catalog_receipt.cjs` publishes that
+fresh report, or records a current workflow failure if no valid report was
+produced. A skipped check never reuses an older degraded report as its result.
 
 Only public documentation GETs are allowed by the fetcher, including redirects.
 Restore a prior catalog commit for rollback. App clients cache the catalog for a

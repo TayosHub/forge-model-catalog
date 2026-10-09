@@ -114,35 +114,43 @@ def recommended_page(provider, text):
     return url
 
 
+class RequestProfileMismatch(ValueError):
+    def __init__(self, model, missing):
+        super().__init__("unsupported_or_unproven_request_profile")
+        self.model = model
+        self.missing = missing
+
+
 def documented_model(provider, overview, detail):
     if provider == "openAI":
         model = one(r"^Model ID:\s*\x60([a-z0-9.-]+)\x60", detail)
-        required = [
-            r"Input modalities:\s*text,\s*image",
-            r"\|\s*Chat Completions\s*\|\s*\x60v1/chat/completions\x60\s*\|\s*Supported\s*\|",
-            r"^-\s*streaming\s*$",
-            r"reasoning\.effort.*\x60low\x60",
-        ]
+        required = {
+            "text_and_image_input": r"Input modalities:\s*text,\s*image",
+            "chat_completions": r"\|\s*Chat Completions\s*\|\s*\x60v1/chat/completions\x60\s*\|\s*Supported\s*\|",
+            "streaming": r"^-\s*streaming\s*$",
+            "low_reasoning_effort": r"reasoning\.effort.*\x60low\x60",
+        }
     elif provider == "claude":
         model = one(r"^\|\s*Claude API\s*\|\s*\x60([a-z0-9-]+)\x60\s*\|", detail)
-        required = [
-            r"Input\s*→\s*output\s*\|\s*Text and images\s*→\s*text",
-            r"(?:thinking can be disabled only at effort|Disabling thinking requires effort)\s*\x60high\x60\s*or below",
-        ]
+        required = {
+            "text_and_image_input": r"Input\s*→\s*output\s*\|\s*Text and images\s*→\s*text",
+            "thinking_disabled_at_low_effort": r"(?:thinking can be disabled only at effort|Disabling thinking requires effort)\s*\x60high\x60\s*or below",
+        }
         if f"\x60{model}\x60" not in overview:
             raise ValueError("model_not_in_current_catalog")
     else:
         model = one(r"\*\*Model name:\*\*\s*\x60([a-z0-9.-]+)\x60", detail)
-        required = [
-            r"\*\*Modalities:\*\*\s*text,\s*image\s*→\s*text",
-            r"\*\*Reasoning efforts \(supported\):\*\*.*\x60low\x60",
-        ]
+        required = {
+            "text_and_image_input": r"\*\*Modalities:\*\*\s*text,\s*image\s*→\s*text",
+            "low_reasoning_effort": r"\*\*Reasoning efforts \(supported\):\*\*.*\x60low\x60",
+        }
     if not model.startswith(PREFIXES[provider]) or len(model) > 128:
         raise ValueError("wrong_provider")
     if any(token in model.split("-") for token in ("preview", "experimental", "latest", "beta", "mini", "nano")):
         raise ValueError("non_stable_or_smaller_tier")
-    if not all(re.search(pattern, detail, re.I | re.M) for pattern in required):
-        raise ValueError("unsupported_or_unproven_request_profile")
+    missing = [name for name, pattern in required.items() if not re.search(pattern, detail, re.I | re.M)]
+    if missing:
+        raise RequestProfileMismatch(model, missing)
     return model
 
 
@@ -154,13 +162,15 @@ def update(catalog, previous=None, get=fetch, now=None):
     report = {"checkedAt": now.isoformat(), "validation": "official_documentation_only",
               "liveAPITested": False, "health": "ok", "providers": {}}
     for provider, source in SOURCES.items():
+        evidence = {"sources": [source]}
         try:
             overview = get(source)
             detail_url = recommended_page(provider, overview)
+            evidence["sources"].append(detail_url)
             detail = get(detail_url)
+            evidence["evidenceSHA256"] = hashlib.sha256((overview + "\n" + detail).encode()).hexdigest()
             model = documented_model(provider, overview, detail)
-            row = {"recommended": model, "sources": [source, detail_url],
-                   "evidenceSHA256": hashlib.sha256((overview + "\n" + detail).encode()).hexdigest()}
+            row = {"recommended": model, **evidence}
             current = catalog[provider]["primary"]
             if model == current:
                 row["state"] = "unchanged"
@@ -184,7 +194,9 @@ def update(catalog, previous=None, get=fetch, now=None):
             # Error reasons are fixed local codes or HTTP status; no remote body.
             reason = ("HTTP_" + str(error.code)) if isinstance(error, urllib.error.HTTPError) else (str(error) if isinstance(error, ValueError) else type(error).__name__)
             report["providers"][provider] = {"state": "held", "reason": reason[:160],
-                                             "retained": catalog[provider]["primary"], "source": source}
+                                             "retained": catalog[provider]["primary"], "source": source, **evidence}
+            if isinstance(error, RequestProfileMismatch):
+                report["providers"][provider].update(recommended=error.model, missingRequirements=error.missing)
     if report["health"] != "ok":
         updated = copy.deepcopy(catalog)
         for row in report["providers"].values():

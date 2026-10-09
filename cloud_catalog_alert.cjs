@@ -8,7 +8,10 @@ function plan(report, failed, existing, runURL, synthetic = false) {
   }
   const details = Object.entries(report.providers || {}).map(([provider, row]) =>
     '- ' + provider + ': ' + (row.reason || row.state || 'check unavailable') +
-    (row.retained ? '. Retaining ' + row.retained : '')).join('\n');
+    (row.retained ? '. Retaining ' + row.retained : '') +
+    (row.recommended ? '. Recommended: ' + row.recommended : '') +
+    (row.missingRequirements?.length ? '. Requirements not established: ' + row.missingRequirements.join(', ') : '') +
+    (row.sources?.length ? '. Sources: ' + row.sources.map(url => '<' + url + '>').join(' ') : '')).join('\n');
   return { action: existing ? 'update' : 'create', title: TITLE,
     body: (synthetic ? '**Alert-path test. No catalog change was attempted.**\n\n' : '') +
       'The automatic model update could not be verified. The previous catalog remains published; this does not by itself mean the coach is broken.\n\n' +

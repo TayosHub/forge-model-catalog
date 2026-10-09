@@ -105,6 +105,22 @@ class CatalogTests(unittest.TestCase):
         result, report = catalog.update(BASE, get=docs.__getitem__, now=NOW)
         self.assertEqual(result, BASE)
         self.assertEqual(report["health"], "degraded")
+        self.assertEqual(report["providers"]["openAI"]["missingRequirements"], ["chat_completions"])
+        self.assertEqual(report["providers"]["openAI"]["recommended"], "gpt-6-astra")
+        self.assertIn(url, report["providers"]["openAI"]["sources"])
+        self.assertEqual(len(report["providers"]["openAI"]["evidenceSHA256"]), 64)
+
+    def test_always_on_thinking_holds_with_an_actionable_compatibility_reason(self):
+        docs = documents()
+        url = "https://platform.claude.com/docs/en/models/opus-5/overview.md"
+        docs[url] = docs[url].replace("Disabling thinking requires effort `high` or below.", "Adaptive thinking is always on and can't be turned off.")
+        result, report = catalog.update(BASE, get=docs.__getitem__, now=NOW)
+        self.assertEqual(result, BASE)
+        row = report["providers"]["claude"]
+        self.assertEqual(row["state"], "held")
+        self.assertEqual(row["recommended"], "claude-opus-5")
+        self.assertEqual(row["missingRequirements"], ["thinking_disabled_at_low_effort"])
+        self.assertIn(url, row["sources"])
 
     def test_provider_recommendation_not_largest_number(self):
         docs = documents()

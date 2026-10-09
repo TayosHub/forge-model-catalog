@@ -14,6 +14,16 @@ test('successful recovery closes with evidence', () => assert.equal(plan({ healt
 test('healthy run creates no notification spam', () => assert.equal(plan({ health: 'ok' }, false, null, 'run').action, 'none'));
 test('workflow failure cannot be hidden by stale healthy status', () => assert.equal(plan({ health: 'ok' }, true, null, 'run').action, 'create'));
 test('test alert is explicitly labeled', () => assert.match(plan(bad, true, null, 'run', true).body, /Alert-path test/));
+test('held model alert names the failed requirement and its documentation', () => {
+  const report = { health: 'degraded', providers: { claude: {
+    reason: 'unsupported_or_unproven_request_profile', retained: 'claude-opus-5', recommended: 'claude-opus-5-5',
+    missingRequirements: ['thinking_disabled_at_low_effort'], sources: ['https://platform.claude.com/docs/en/models/opus-5-5/overview.md']
+  } } };
+  const body = plan(report, true, null, 'run').body;
+  assert.match(body, /thinking_disabled_at_low_effort/);
+  assert.match(body, /Recommended: claude-opus-5-5/);
+  assert.match(body, /https:\/\/platform.claude.com\/docs\/en\/models\/opus-5-5\/overview.md/);
+});
 
 function harness(existing = null, comments = []) {
   const calls = [];

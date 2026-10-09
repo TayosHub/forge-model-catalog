@@ -44,7 +44,7 @@ async function run({ github, context, core, report = readReport(),
     await core.summary.addHeading(TITLE).addRaw(change.body).write();
     if (existing) {
       // A body edit alone is not a fresh alert. Comment once per attempt, before
-      // updating the summary so an API failure cannot hide an undelivered comment.
+      // updating the issue body so an API failure cannot hide an undelivered comment.
       const comments = await github.paginate(github.rest.issues.listComments, { ...context.repo, issue_number: existing.number, per_page: 100 });
       const delivered = (existing.body || '').includes(marker) || comments.some(comment => (comment.body || '').includes(marker));
       if (!delivered) await github.rest.issues.createComment({ ...context.repo, issue_number: existing.number, body: change.body });

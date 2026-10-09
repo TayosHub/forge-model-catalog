@@ -4,6 +4,7 @@ import datetime as dt
 import json
 from pathlib import Path
 import unittest
+import tempfile
 from unittest.mock import patch
 import cloud_model_catalog as catalog
 
@@ -33,6 +34,35 @@ def documents(openai="gpt-6-astra"):
 
 
 class CatalogTests(unittest.TestCase):
+    def test_cli_reads_observation_history_without_reusing_it_as_fresh_output(self):
+        docs = documents("gpt-7-astra")
+        _, pending = catalog.update(BASE, get=docs.__getitem__, now=NOW)
+        update = catalog.update
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source, history, fresh, output = [root / name for name in ("catalog.json", "history.json", "fresh.json", "candidate.json")]
+            source.write_text(json.dumps(BASE))
+            history.write_text(json.dumps(pending))
+            original = history.read_bytes()
+            argv = ["catalog", "--catalog", str(source), "--refresh", "--previous-status", str(history), "--status", str(fresh), "--output", str(output)]
+            with patch("sys.argv", argv), patch.object(catalog, "update", side_effect=lambda c, p: update(c, p, get=docs.__getitem__, now=NOW + dt.timedelta(days=7))):
+                catalog.main()
+            self.assertEqual(history.read_bytes(), original)
+            self.assertEqual(json.loads(output.read_text())["openAI"]["primary"], "gpt-7-astra")
+            self.assertEqual(json.loads(fresh.read_text())["health"], "ok")
+
+    def test_cli_failure_before_update_leaves_no_fresh_receipt(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source, history, fresh, output = [root / name for name in ("catalog.json", "history.json", "fresh.json", "candidate.json")]
+            source.write_text(json.dumps(BASE))
+            history.write_text("broken history")
+            with patch("sys.argv", ["catalog", "--catalog", str(source), "--refresh", "--previous-status", str(history), "--status", str(fresh), "--output", str(output)]):
+                with self.assertRaises(ValueError):
+                    catalog.main()
+            self.assertFalse(fresh.exists())
+            self.assertFalse(output.exists())
+
     def test_unchanged_catalog_has_fresh_health_not_false_api_claim(self):
         result, status = catalog.update(BASE, get=documents().__getitem__, now=NOW)
         self.assertEqual(result, BASE)

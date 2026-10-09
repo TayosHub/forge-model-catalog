@@ -60,7 +60,14 @@ normally to exercise recovery. The test retains the catalog unchanged.
 
 `node --test test_cloud_catalog_alert.cjs`
 
+`node --test test_cloud_catalog_receipt.cjs`
+
 `python3 cloud_model_catalog.py --catalog cloud_model_policy.json --refresh --output candidate.json --status status.json`
+
+Automation reads observation history using `--previous-status status.json` and
+writes `--status check-status.json`. `cloud_catalog_receipt.cjs` publishes that
+fresh report, or records a current workflow failure if no valid report was
+produced. A skipped check never reuses an older degraded report as its result.
 
 Only public documentation GETs are allowed by the fetcher, including redirects.
 Restore a prior catalog commit for rollback. App clients cache the catalog for a

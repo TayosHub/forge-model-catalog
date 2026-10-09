@@ -202,6 +202,7 @@ def main():
     parser.add_argument("--catalog", type=Path, required=True)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--status", type=Path)
+    parser.add_argument("--previous-status", type=Path, help="Read history separately from this run's fresh status output")
     parser.add_argument("--refresh", action="store_true", help="GET public docs only; no paid inference")
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
@@ -212,7 +213,10 @@ def main():
         return
     if not args.output or not args.status or args.output.resolve() == args.catalog.resolve() or args.status.resolve() in (args.catalog.resolve(), args.output.resolve()):
         raise ValueError("separate_artifact_paths_required")
-    previous = json.loads(args.status.read_text()) if args.status.exists() else {}
+    if args.previous_status and args.previous_status.resolve() in (args.output.resolve(), args.status.resolve()):
+        raise ValueError("previous_status_must_be_read_only")
+    history = args.previous_status or args.status
+    previous = json.loads(history.read_text()) if history.exists() else {}
     candidate, report = update(catalog, previous)
     args.status.parent.mkdir(parents=True, exist_ok=True)
     args.status.write_text(json.dumps(report, indent=2) + "\n")
